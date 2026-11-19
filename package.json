@@ -1,0 +1,38 @@
+{
+  "name": "opencode-with-vibe",
+  "author": "Toil",
+  "homepage": "https://github.com/ilyhalight/opencode-with-vibe",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ilyhalight/opencode-with-vibe.git"
+  },
+  "version": "0.1.0",
+  "description": "OpenCode plugin to use your Mistral Vibe subscription over the official vibe ACP",
+  "type": "module",
+  "license": "MIT",
+  "scripts": {
+    "test": "bun test",
+    "typecheck": "tsc --noEmit",
+    "build": "tsup && tsc -p tsconfig.build.json",
+    "smoke": "bun run scripts/smoke.ts"
+  },
+  "main": "dist/plugin.js",
+  "types": "dist/plugin.d.ts",
+  "files": [
+    "dist"
+  ],
+  "keywords": [
+    "opencode",
+    "opencode-plugin",
+    "vibe",
+    "mistral-vibe",
+    "acp"
+  ],
+  "devDependencies": {
+    "@ai-sdk/provider": "4.0.38",
+    "@opencode/plugin": "^2.1.0",
+    "@types/bun": "latest",
+    "tsup": "^9.0.0",
+    "typescript": "^7.0.2"
+  }
+}
