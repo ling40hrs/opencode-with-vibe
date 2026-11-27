@@ -11,35 +11,61 @@ commits at `dist/plugin.js`.
 
 ## Using it on another machine
 
-Pin a ref; a bare repo spec is left on whatever it installed and gets update-checked.
+Measured on OpenCode v2.4.2. One route works, one needs a registry login, and the obvious
+one — a git spec — does not work at all.
 
-```json
-{
-  "plugins": [
-    {
-      "package": "github:ling40hrs/opencode-with-vibe#v0.1.0-fix.1",
-      "options": { "permission": "allow" }
-    }
-  ]
-}
-```
+### Route 1: the plugin directory (works today)
 
-Or from the CLI:
+OpenCode scans `~/.config/opencode/plugin/` and loads every plugin it finds there. Clone
+this fork once per machine at a stable path and symlink the bundle in:
 
 ```bash
-opencode plugin add 'github:ling40hrs/opencode-with-vibe#v0.1.0-fix.1'
+git clone https://github.com/ling40hrs/opencode-with-vibe.git ~/.local/share/opencode-with-vibe
+git -C ~/.local/share/opencode-with-vibe checkout v0.1.0-fix.1
+ln -sf ~/.local/share/opencode-with-vibe/dist/plugin.js ~/.config/opencode/plugin/opencode-with-vibe.js
 ```
 
-Replace the tag with a commit sha if you want the ref to be immutable against a force-push.
-Restart OpenCode afterwards: the plugin module is read once at load time.
+Then drop the `opencode-with-vibe` entry from `plugins` in `opencode.json`, so the npm
+package cannot load alongside it — both provide `vibe/*` providers. Restart OpenCode and
+check:
+
+```bash
+opencode plugin list   # expect: opencode-with-vibe  local  ~/.config/opencode/plugin/opencode-with-vibe.js
+```
+
+`git -C ... checkout v0.1.0-fix.1` is what pins the machine. Use the commit sha instead of
+the tag if you want immunity to a force-push.
+
+### Route 2: publish to npm (works, needs credentials)
+
+npm specs install correctly in v2.4.2, so publishing this repo makes the spec one string:
+
+```json
+{ "package": "opencode-with-vibe-fix@0.1.0-fix.1", "options": { "permission": "allow" } }
+```
+
+Not done here: this machine has no npm credentials (`npm whoami` returns `ENEEDAUTH`) and
+`opencode-with-vibe-fix` is unclaimed on the registry. Run `npm publish` from a checkout and
+then use the spec above.
+
+### What does not work in v2.4.2
+
+- **Git specs.** `opencode plugin add 'github:ling40hrs/opencode-with-vibe#v0.1.0-fix.1'`
+  fails with `git dep preparation failed`, after which bun prints `Unrecognized flag:
+  --force in command opencode` and friends — OpenCode's binary re-execs itself with npm
+  flags and its own CLI rejects them. Pristine upstream
+  (`github:ilyhalight/opencode-with-vibe`) fails identically, so this is an OpenCode bug,
+  not something this fork can fix. Worth an upstream issue.
+- **A filesystem path in the object form.** `{"package": "/abs/path/dist/plugin.js"}` is
+  accepted without error and silently ignored — `opencode plugin list` shows nothing. Only
+  the plugin-directory scan works for local code.
 
 ## Why `dist/` is committed here
 
 Upstream's `.gitignore` excludes `dist/`, `package.json` sets `main` to `dist/plugin.js`,
-and there is no `prepare` script — only `build`, which needs the dev dependencies. A git
-install of upstream as-is therefore resolves `main` to a file that does not exist. Committing
-the built bundle is what makes the fork installable from git, and it means no machine needs a
-toolchain.
+and there is no `prepare` script — only `build`, which needs the dev dependencies. Any
+consumer that resolves the package rather than the file finds nothing to load. Committing
+the built bundle means no machine needs a toolchain, and Route 1 has something to link.
 
 `dist/plugin.js` is reproducible from the patch:
 
