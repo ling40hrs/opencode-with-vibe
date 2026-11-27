@@ -6,7 +6,7 @@
     "type": "git",
     "url": "git+https://github.com/ilyhalight/opencode-with-vibe.git"
   },
-  "version": "0.1.0-fix.2",
+  "version": "0.1.0-fix.3",
   "description": "OpenCode plugin to use your Mistral Vibe subscription over the official vibe ACP",
   "type": "module",
   "license": "MIT",
@@ -15,7 +15,9 @@
     "test:patch": "node patch/test-usage.cjs",
     "typecheck": "tsc --noEmit",
     "build": "tsup && tsc -p tsconfig.build.json",
-    "smoke": "bun run scripts/smoke.ts"
+    "smoke": "bun run scripts/smoke.ts",
+    "sidebar:install": "bash sidebar/install.sh",
+    "sidebar:check": "bash sidebar/install.sh --check"
   },
   "main": "dist/plugin.js",
   "types": "dist/plugin.d.ts",

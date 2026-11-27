@@ -5,6 +5,11 @@
 > as one turn's usage. The fix ships prebuilt in `dist/plugin.js`, so this fork installs from
 > git where upstream cannot. See [`PATCH.md`](PATCH.md) for install instructions and
 > [`patch/README.md`](patch/README.md) for the diagnosis. Upstream source is unmodified.
+>
+> It also carries two optional plugins that give a Vibe session the spend readout a native
+> provider has: a per-token price table, and a sidebar block with cost, token split and an
+> honest context gauge. Additive, `vibe`-only, nothing in `src/`. See
+> [`sidebar/README.md`](sidebar/README.md).
 
 An [OpenCode](https://opencode.ai) plugin that adds **Mistral Vibe** as a model provider (`vibe/...`) by the official
 **`vibe-acp`** binary over the [Agent Client Protocol](https://agentclientprotocol.com). OpenCode **v2** only.
@@ -52,6 +57,33 @@ The context window shown by OpenCode comes from the `usage_update.size` that Vib
 Vibe has its own session modes (`ask`, `accept-edits`, `smart-approve`, `auto-approve`). The plugin leaves the mode you
 chose alone, but repairs it after a model switch, because Vibe resets it (switching to `mistral-medium-latest` drops it
 back to `ask`).
+
+## Sidebar spend and pricing (this fork)
+
+Upstream declares every Vibe model with `cost: []` — defensible for a subscription, but it
+means a Vibe session reports nothing where a native provider reports a running total. Two
+optional plugins, in [`sidebar/`](sidebar/README.md), close that gap:
+
+| plugin | kind | what it does |
+| ------ | ---- | ------------ |
+| `vibe-pricing.ts` | server | fills the `vibe/*` model cost table from Mistral's published price list, cached for a day |
+| `vibe-sidebar/` | TUI | appends a block to `sidebar.content` for `vibe` sessions only |
+
+```
+Vibe $0.0104 · 1 turn
+↑6,396 · ↓43 · cache 3,072 (32%)
+ctx 13% of 71k
+```
+
+```bash
+./sidebar/install.sh          # copies both halves into ~/.config/opencode
+```
+
+The block sums assistant messages rather than reading the session record, because the ACP
+runtime double counts that record; it formats sub-cent amounts, because two decimals render a
+whole session as `$0.00`; and it divides the last turn's prompt by the context window Vibe
+reports, because the builtin gauge reads the inflated record. `sidebar/README.md` has the
+measurements, the merge order for price sources, and the verification steps.
 
 ## Known limitations
 
