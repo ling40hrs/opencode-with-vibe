@@ -1,5 +1,11 @@
 # opencode-with-vibe
 
+> **This is a fork.** It fixes inflated context accounting and the spurious auto-compaction
+> that caused: `vibe-acp` reports cumulative session token totals, and upstream mapped them
+> as one turn's usage. The fix ships prebuilt in `dist/plugin.js`, so this fork installs from
+> git where upstream cannot. See [`PATCH.md`](PATCH.md) for install instructions and
+> [`patch/README.md`](patch/README.md) for the diagnosis. Upstream source is unmodified.
+
 An [OpenCode](https://opencode.ai) plugin that adds **Mistral Vibe** as a model provider (`vibe/...`) by the official
 **`vibe-acp`** binary over the [Agent Client Protocol](https://agentclientprotocol.com). OpenCode **v2** only.
 
