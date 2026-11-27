@@ -10,6 +10,10 @@
 > provider has: a per-token price table, and a sidebar block with cost, token split and an
 > honest context gauge. Additive, `vibe`-only, nothing in `src/`. See
 > [`sidebar/README.md`](sidebar/README.md).
+>
+> And it makes OpenCode's **plan mode** apply to a Vibe session: the active agent's rules
+> answer Vibe's permission requests, its instructions ride into the prompt, and switching
+> agents ends the mode. See [Plan mode](PATCH.md#plan-mode).
 
 An [OpenCode](https://opencode.ai) plugin that adds **Mistral Vibe** as a model provider (`vibe/...`) by the official
 **`vibe-acp`** binary over the [Agent Client Protocol](https://agentclientprotocol.com). OpenCode **v2** only.
@@ -57,6 +61,28 @@ The context window shown by OpenCode comes from the `usage_update.size` that Vib
 Vibe has its own session modes (`ask`, `accept-edits`, `smart-approve`, `auto-approve`). The plugin leaves the mode you
 chose alone, but repairs it after a model switch, because Vibe resets it (switching to `mistral-medium-latest` drops it
 back to `ask`).
+
+## Plan mode (this fork)
+
+OpenCode's `plan` agent is read-only by construction: an ordered rule list plus an instruction
+pair. Neither used to reach a Vibe session, because Vibe runs its own tools in its own process —
+so `plan` and `build` behaved identically over this provider.
+
+Now they do not. A restricting agent switches the Vibe conversation to its `ask` approval
+policy and answers every permission request from that agent's own rules, so a denied `edit` is
+refused where it is attempted; the agent's instructions are prepended to the turn; and the
+"no longer in Plan mode" note is sent once when the user switches away.
+
+```
+[OpenCode agent: plan]
+
+You are in Plan mode. Discuss the plan with the user directly ...
+```
+
+Nothing changes for `build` (`* * allow`): no mode switch, no injected text, no approval round
+trips. The gaps are documented rather than hidden — `read_file` and `grep` are never gated
+(Vibe allows them unconditionally), and a rule that *asks* is refused because the ACP client has
+no user to ask. [`PATCH.md#plan-mode`](PATCH.md#plan-mode) has the details.
 
 ## Sidebar spend and pricing (this fork)
 

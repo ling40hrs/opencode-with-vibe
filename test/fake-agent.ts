@@ -54,6 +54,14 @@ const MODES = [
 ]
 const FRESH = (): Conversation => ({ prompts: 0, model: "zai-glm-5-3", level: "max", mode: "accept-edits" })
 
+/** What vibe offers when it asks about a tool call: one allow-once, two standing allows, one deny, no deny-always. */
+const PERMISSION_OPTIONS = [
+  { optionId: "allow_once", name: "Allow once", kind: "allow_once" },
+  { optionId: "allow_always", name: "Allow for remainder of this session", kind: "allow_always" },
+  { optionId: "allow_always_permanent", name: "Always allow", kind: "allow_always" },
+  { optionId: "reject_once", name: "Deny", kind: "reject_once" },
+]
+
 const select = (id: string, name: string, category: string, currentValue: string, options: { value: string; name?: string }[]) => ({
   currentValue,
   options,
@@ -187,12 +195,36 @@ async function prompt(id: unknown, params: any) {
       const response = await request("session/request_permission", {
         sessionId,
         toolCall: { toolCallId: "call_1" },
-        options: [
-          { optionId: "allow_once", name: "Allow once", kind: "allow_once" },
-          { optionId: "allow_always", name: "Allow for remainder of this session", kind: "allow_always" },
-          { optionId: "allow_always_permanent", name: "Always allow", kind: "allow_always" },
-          { optionId: "reject_once", name: "Deny", kind: "reject_once" },
-        ],
+        options: PERMISSION_OPTIONS,
+      })
+      chunk(`permission:${JSON.stringify(response.result?.outcome ?? response.error)}`)
+      return finish("end_turn")
+    }
+    case "permission-call": {
+      // vibe describes the call first and then names only its id in the request, which is what the client judges.
+      update(sessionId, toolCall("in_progress"))
+      const response = await request("session/request_permission", {
+        sessionId,
+        toolCall: { toolCallId: "call_1" },
+        options: PERMISSION_OPTIONS,
+      })
+      chunk(`permission:${JSON.stringify(response.result?.outcome ?? response.error)}`)
+      return finish("end_turn")
+    }
+    case "permission-write": {
+      update(
+        sessionId,
+        toolCall("in_progress", {
+          title: "edit: notes.md",
+          kind: "edit",
+          rawInput: { file_path: `${CWD}\\notes.md` },
+          _meta: { tool_name: "edit", effect_kind: "edit" },
+        }),
+      )
+      const response = await request("session/request_permission", {
+        sessionId,
+        toolCall: { toolCallId: "call_1" },
+        options: PERMISSION_OPTIONS,
       })
       chunk(`permission:${JSON.stringify(response.result?.outcome ?? response.error)}`)
       return finish("end_turn")

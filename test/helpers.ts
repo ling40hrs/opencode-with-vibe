@@ -83,7 +83,7 @@ export function memoryStore() {
   return {
     data,
     get: async (key: string) => data.get(key),
-    set: async (key: string, value: SessionRecord) => void data.set(key, structuredClone(value)),
+    set: async (key: string, value: unknown) => void data.set(key, structuredClone(value)),
   }
 }
 

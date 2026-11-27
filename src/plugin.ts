@@ -3,13 +3,13 @@ import { AcpClient, type AcpClientOptions } from "./acp/client"
 import { createCatalog, discoverOnce, readCatalog, serializeCatalog } from "./catalog"
 import { KIND_HEADER, PROVIDER_ID as MODEL_PROVIDER, SESSION_HEADER, VibeLanguageModel } from "./model"
 import { DEFAULT_CATALOG, PROVIDER_ID, PROVIDER_NAME, PROVIDER_PACKAGE, toModel } from "./models"
+import { policyOf } from "./plan"
 import { probeCatalog } from "./probe"
 import { cpSync, existsSync, mkdtempSync, rmSync, statSync } from "node:fs"
 import { homedir, tmpdir } from "node:os"
 import { join } from "node:path"
 import { install, peek, resolve, runtimeKey, type Runtime } from "./runtime"
 import { VibeSessions } from "./sessions"
-import type { SessionRecord } from "./sync/decide"
 
 type VibePlugin = Plugin.Plugin
 
@@ -117,11 +117,24 @@ export function createPlugin(dependencies: PluginDependencies = {}): VibePlugin 
         client,
         {
           get: (key) => ctx.storage.get(key),
-          set: (key, value: SessionRecord) => ctx.storage.set(key, value as unknown as Parameters<typeof ctx.storage.set>[1]),
+          set: (key, value) => ctx.storage.set(key, value as unknown as Parameters<typeof ctx.storage.set>[1]),
         },
         {
           cwd,
           catalog: catalog.find,
+          // The active OpenCode agent is what makes a plan turn read-only: its rules answer Vibe's permission
+          // requests, and its instructions ride along in the prompt. An agent that cannot be read yields no policy
+          // rather than a guessed one, because a guessed policy would restrict a session the user never restricted.
+          policy: async (sessionID: string) => {
+            try {
+              const session = await ctx.session.get({ sessionID })
+              if (!session.agent) return undefined
+              const agent = await ctx.agent.get({ agentID: session.agent })
+              return policyOf(agent.data, session.permissions)
+            } catch {
+              return undefined
+            }
+          },
           // Looks up which thinking levels each model offers, once, without sending any prompt.
           onChatSession: discoverOnce(() => probeCatalog(probeClient, cwd), catalog.update),
         },

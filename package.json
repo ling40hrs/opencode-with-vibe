@@ -6,7 +6,7 @@
     "type": "git",
     "url": "git+https://github.com/ilyhalight/opencode-with-vibe.git"
   },
-  "version": "0.1.0-fix.3",
+  "version": "0.1.0-fix.4",
   "description": "OpenCode plugin to use your Mistral Vibe subscription over the official vibe ACP",
   "type": "module",
   "license": "MIT",

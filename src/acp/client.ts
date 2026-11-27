@@ -7,6 +7,7 @@ import {
   type PermissionRequest,
   type PromptResult,
   type SessionUpdate,
+  type ToolCallUpdate,
 } from "./types"
 
 export interface AcpClientOptions {
@@ -24,7 +25,20 @@ export interface AcpClientOptions {
   backoffMs?: number
   /** How long spawn + `initialize` may take before the child is killed. Default 60000. */
   startTimeoutMs?: number
+  /** Judges a permission request when the plugin knows the session's agent; see `decide`. */
+  decide?: PermissionDecider
 }
+
+/**
+ * Answers one permission request. `undefined` means "no opinion": the static `permission` option decides instead.
+ *
+ * The agent's request carries only a `toolCallId` (see `PermissionRequest`), so the judgement is made from the
+ * `tool_call` update that preceded it — which is why the client keeps one.
+ */
+export type PermissionDecider = (
+  sessionId: string,
+  call: ToolCallUpdate | undefined,
+) => "allow" | "deny" | "ask"
 
 type Pending = { resolve: (value: unknown) => void; reject: (error: Error) => void; method: string }
 type UpdateListener = (update: SessionUpdate) => void
@@ -53,8 +67,14 @@ export class AcpClient {
   private startedAt = 0
   private stderrTail = ""
   private closed = true
+  /** Assignable after construction: the sessions layer owns the policy and knows the agent per session. */
+  decide?: PermissionDecider
+  /** The `tool_call` update behind each id, per session. A permission request names only the id. */
+  private calls = new Map<string, Map<string, ToolCallUpdate>>()
 
-  constructor(private readonly options: AcpClientOptions = {}) {}
+  constructor(private readonly options: AcpClientOptions = {}) {
+    this.decide = options.decide
+  }
 
   get running() {
     return this.child !== undefined && !this.closed
@@ -298,6 +318,10 @@ export class AcpClient {
 
   private route(params: { sessionId?: string; update?: SessionUpdate } | undefined) {
     if (!params?.sessionId || !params.update) return
+    const update = params.update
+    if (update.sessionUpdate === "tool_call" || update.sessionUpdate === "tool_call_update") {
+      this.remember(params.sessionId, update as ToolCallUpdate)
+    }
     for (const listener of this.listeners.get(params.sessionId) ?? []) {
       try {
         listener(params.update)
@@ -307,9 +331,37 @@ export class AcpClient {
     }
   }
 
+  /**
+   * Keeps the latest `tool_call` update per id so a permission request can be judged. Vibe describes the call
+   * (`_meta.tool_name`, `rawInput`, `locations`) on the update, not on the request, and a request for an id that was
+   * never seen is judged as unknown — which the policy answers with "ask", never with a silent allow.
+   *
+   * Bounded: a long session makes thousands of calls, and only the pending one is ever asked about.
+   */
+  private remember(sessionId: string, update: ToolCallUpdate) {
+    if (!update.toolCallId) return
+    const calls = this.calls.get(sessionId) ?? new Map<string, ToolCallUpdate>()
+    calls.set(update.toolCallId, { ...calls.get(update.toolCallId), ...update })
+    if (calls.size > 500) {
+      const oldest = calls.keys().next()
+      if (!oldest.done) calls.delete(oldest.value)
+    }
+    this.calls.set(sessionId, calls)
+  }
+
   private handleRequest(id: number | string, method: string, params: unknown) {
     if (method === "session/request_permission") {
-      const outcome = choosePermission(params as PermissionRequest, this.options.permission ?? "allow")
+      const request = params as PermissionRequest
+      const effect = this.decide?.(request.sessionId, this.calls.get(request.sessionId)?.get(request.toolCall?.toolCallId ?? ""))
+      // No opinion, or a policy that wants the session default: the option from the config decides.
+      const mode = effect === "allow" || effect === "deny" ? effect : (this.options.permission ?? "allow")
+      const outcome = choosePermission(request, mode)
+      this.options.debug?.("permission", {
+        tool: request.toolCall?.toolCallId,
+        asked: effect,
+        answered: mode,
+        outcome,
+      })
       // Vibe reads a nested `outcome` object; a flat `{outcome, optionId}` is ignored and the call hangs.
       this.write({ jsonrpc: "2.0", id, result: { outcome } })
       return

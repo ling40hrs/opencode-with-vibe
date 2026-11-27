@@ -12,6 +12,7 @@ import {
 } from "./acp/types"
 import { toolIdentity } from "./convert"
 import { MODE_CONFIG_ID, MODEL_CONFIG_ID, THINKING_CONFIG_ID, type CatalogModel } from "./models"
+import { actionOfCall, decide as decideRule, instructionText, restricts, type Policy, type Previous } from "./plan"
 import { modeOf, thinkingOf } from "./probe"
 import { decide, type Decision, type SessionRecord } from "./sync/decide"
 import { ANY_REPLY, assistantHash, groups as fingerprint, type Group, type ToolIdentity } from "./sync/fingerprint"
@@ -19,7 +20,7 @@ import { catchUpContent, flattenContent, userContent, type Rendered } from "./sy
 
 export interface SessionStore {
   get(key: string): Promise<unknown>
-  set(key: string, value: SessionRecord): Promise<void>
+  set(key: string, value: unknown): Promise<void>
 }
 
 export interface RunRequest {
@@ -58,6 +59,11 @@ export interface SessionsOptions {
   onChatSession?: () => void
   /** Catalog entry of a base model; supplies the default thinking level to apply when none is selected. */
   catalog?: (modelId: string) => CatalogModel | undefined
+  /**
+   * The OpenCode agent governing a chat session, resolved per turn because the user can switch agents between them.
+   * Undefined (no agent, or one that could not be read) leaves Vibe's own approval policy untouched.
+   */
+  policy?: (sessionID: string) => Promise<Policy | undefined>
 }
 
 /**
@@ -77,22 +83,57 @@ interface Live {
   level?: string
   /** Session mode last known to be active; used to repair it after a model switch resets it. */
   mode?: string
+  /** The mode Vibe started this conversation with, restored once no OpenCode agent restricts tools. */
+  base?: string
+  /** Whether the previous turn ran under a restricting agent, for the one-shot "no longer in that mode" note. */
+  restricted?: boolean
+  /** That agent's `instructions.unselected`, kept so the note can still be sent after a restart. */
+  unselected?: string
   /** Tool calls already finished in this conversation, so a replayed transcript is not emitted twice. */
   done?: Set<string>
   timer?: ReturnType<typeof setTimeout>
 }
 
 const STORAGE_PREFIX = "session:"
+/** Where the last plan-mode state of a chat session is remembered; see `applyPolicy`. */
+const AGENT_PREFIX = "agent:"
 
 export class VibeSessions {
   private live = new Map<string, Live>()
   private locks = new Map<string, Promise<unknown>>()
+  /** What governs each live conversation, for answering its permission requests. Keyed by ACP session id. */
+  private policies = new Map<string, Policy>()
 
   constructor(
     private readonly client: AcpClient,
     private readonly store: SessionStore,
     private readonly options: SessionsOptions,
-  ) {}
+  ) {
+    // Vibe only asks when its own approval policy is `ask`, which a restricting agent turns on. Its request names a
+    // tool call id and nothing else, so the answer comes from the rules of the agent that session belongs to.
+    this.client.decide ??= (sessionId, call) => this.judge(sessionId, call)
+  }
+
+  /**
+   * Answers one `session/request_permission` from the rules of the governing agent.
+   *
+   * `ask` never reaches Vibe: OpenCode would have prompted the user, and the ACP client has no way to, so a rule that
+   * asks is treated as a refusal. That is the only fail-closed answer available, and it keeps a plan turn from
+   * quietly approving the one call the rules wanted a human for.
+   */
+  private judge(sessionId: string, call: ToolCallUpdate | undefined): "allow" | "deny" | "ask" {
+    const policy = this.policies.get(sessionId)
+    if (!policy) return "ask"
+    if (!call) {
+      // A request for a call that was never described cannot be judged; the agent restricts, so refuse.
+      this.options.debug?.("permission denied without a tool call", { sessionId })
+      return "deny"
+    }
+    const { action, resource } = actionOfCall(call)
+    const effect = decideRule(policy.rules, action, resource, this.options.cwd)
+    this.options.debug?.("permission judged", { agent: policy.agent, action, resource, effect })
+    return effect === "ask" ? "deny" : effect
+  }
 
   run(request: RunRequest): Promise<RunOutcome> {
     if (!request.primary || !request.sessionID) return this.throwaway(request)
@@ -136,6 +177,11 @@ export class VibeSessions {
     const previous = this.live.get(sessionID)
     const live = continuing ? previous! : await this.create(true)
     if (!continuing) this.live.set(sessionID, live)
+    if (live.restricted === undefined) {
+      const previous = await this.storedAgent(sessionID)
+      live.restricted = previous?.restricted ?? false
+      live.unselected = previous?.unselected
+    }
     const mode: RunMode = continuing ? (reattached ? "reattached" : "continue") : "fresh"
     const reason = decision.kind === "fresh" ? describeReason(record ? decision.reason : "no-record") : undefined
 
@@ -186,9 +232,11 @@ export class VibeSessions {
     }
 
     let result: PromptResult
+    let blocks = rendered.blocks
     try {
       await this.applyConfig(live, request)
-      result = await this.client.prompt(live.acpSessionId, rendered.blocks, onUpdate, request.signal, () => {
+      blocks = await this.applyPolicy(live, sessionID, blocks)
+      result = await this.client.prompt(live.acpSessionId, blocks, onUpdate, request.signal, () => {
         sent = true
       })
     } catch (error) {
@@ -205,7 +253,7 @@ export class VibeSessions {
 
     const finished = result.stopReason === "end_turn" && (text.trim() !== "" || tools.size > 0)
     await commit(finished ? assistantHash(text, [...tools.values()]) : ANY_REPLY)
-    return { result, mode, reason, acpSessionId: live.acpSessionId, sent: rendered.blocks, warnings: rendered.warnings }
+    return { result, mode, reason, acpSessionId: live.acpSessionId, sent: blocks, warnings: rendered.warnings }
     } finally {
       this.schedule(sessionID)
     }
@@ -233,13 +281,16 @@ export class VibeSessions {
         this.options.debug?.("onChatSession failed", String(error))
       }
     }
+    const mode = modeOf(setup.configOptions) ?? setup.modes?.currentModeId
     return {
       acpSessionId: setup.sessionId,
       generation: this.client.generation,
       // What a new conversation starts with, so an unchanged choice costs no round trip.
       model: setup.configOptions?.find((option) => option.id === MODEL_CONFIG_ID)?.currentValue,
       level: thinkingOf(setup.configOptions)?.default,
-      mode: modeOf(setup.configOptions) ?? setup.modes?.currentModeId,
+      mode,
+      // The user's own approval policy, restored after a turn that had to switch to `ask`.
+      base: mode,
     }
   }
 
@@ -298,6 +349,92 @@ export class VibeSessions {
       if (!(error instanceof AcpRpcError)) throw error
       this.options.debug?.("thinking level rejected", { level: wanted, error: String(error) })
       live.level = undefined
+    }
+  }
+
+  /**
+   * Applies the OpenCode agent governing this session to the Vibe conversation, and returns the blocks to send.
+   *
+   * Two of OpenCode's three plan-mode pieces cross the ACP boundary here.
+   *
+   *   - **Permissions** become Vibe's own approval policy. Under `auto-approve` Vibe never emits
+   *     `session/request_permission`, so the agent's rules would have nothing to decide; a restricting agent
+   *     therefore switches the conversation to `ask`, which is where Vibe's state-changing tools (edit, write_file,
+   *     bash, web_fetch) start asking, and `judge` answers each request from the agent's rules.
+   *   - **Instructions** become a leading text block. ACP has no channel for a client to set Vibe's system prompt —
+   *     Vibe runs its own — so this is the only place the agent's text can reach the model.
+   *
+   * The third piece, the switch itself, stays the user's: OpenCode does the same, and `instructions.unselected` is
+   * sent once on the first turn that runs under a different agent so a conversation that was in plan mode learns it
+   * is not any more. That state is persisted, because losing it would leave a resumed conversation believing the old
+   * restrictions still hold.
+   */
+  private async applyPolicy(live: Live, sessionID: string, blocks: ContentBlock[]): Promise<ContentBlock[]> {
+    let policy: Policy | undefined
+    try {
+      policy = await this.options.policy?.(sessionID)
+    } catch (error) {
+      // A policy that cannot be read must not fail the turn; the conversation keeps the mode it already has.
+      this.options.debug?.("policy lookup failed", String(error))
+    }
+
+    const restricted = policy !== undefined && restricts(policy.rules)
+    if (policy) this.policies.set(live.acpSessionId, policy)
+    else this.policies.delete(live.acpSessionId)
+
+    // `base` is the mode Vibe started on (the user's own approval policy), restored once nothing restricts the session.
+    const wanted = restricted ? "ask" : live.base
+    if (wanted && wanted !== live.mode) {
+      try {
+        live.mode = modeOf(await this.setConfig(live, MODE_CONFIG_ID, wanted)) ?? wanted
+      } catch (error) {
+        if (!(error instanceof AcpRpcError)) throw error
+        // The turn still runs; the gate is just not in place, which the debug log has to record.
+        this.options.debug?.("mode rejected", { mode: wanted, error: String(error) })
+        live.mode = undefined
+      }
+    }
+
+    const previous: Previous = { restricted: live.restricted === true, unselected: live.unselected }
+    const text = instructionText(policy, previous)
+    live.restricted = restricted
+    live.unselected = restricted ? policy?.instructions.unselected : undefined
+    if (policy && previous.restricted !== restricted) await this.rememberAgent(sessionID, policy.agent, live)
+
+    return text ? [{ type: "text", text }, ...blocks] : blocks
+  }
+
+  /**
+   * The agent the previous turn ran under, read back so a restart does not lose the note that plan mode ended. Losing
+   * it is not cosmetic: a resumed conversation still carries the old instructions, and without the note Vibe would
+   * keep refusing the edits the user has just asked for.
+   */
+  private async storedAgent(sessionID: string) {
+    try {
+      const value = await this.store.get(AGENT_PREFIX + sessionID)
+      if (!value || typeof value !== "object") return undefined
+      const record = value as { v?: unknown; restricted?: unknown; unselected?: unknown }
+      if (record.v !== 1 || typeof record.restricted !== "boolean") return undefined
+      return {
+        restricted: record.restricted,
+        unselected: typeof record.unselected === "string" ? record.unselected : undefined,
+      }
+    } catch (error) {
+      this.options.debug?.("agent state read failed", String(error))
+      return undefined
+    }
+  }
+
+  private async rememberAgent(sessionID: string, agent: string, live: Live) {
+    try {
+      await this.store.set(AGENT_PREFIX + sessionID, {
+        v: 1,
+        agent,
+        restricted: live.restricted === true,
+        unselected: live.unselected,
+      })
+    } catch (error) {
+      this.options.debug?.("agent state write failed", String(error))
     }
   }
 
