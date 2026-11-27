@@ -139,11 +139,21 @@ async function prompt(id: unknown, params: any) {
     _meta: { steps: 0, promptTokens: 100, completionTokens: 0, cachedTokens: 50, totalTokens: 100, tokensPerSecond: 0, lastTurnDuration: 0, lastTurnTotalTokens: 0 },
   })
   const chunk = (value: string) => update(sessionId, { sessionUpdate: "agent_message_chunk", content: { type: "text", text: value } })
+  // Like vibe: a usage update goes out right before the response, so the turn's completion is in the totals it sends.
+  const finish = (stopReason: string, completion = 5) => {
+    update(sessionId, {
+      used: 100 + completion,
+      size: CONTEXT_WINDOW,
+      sessionUpdate: "usage_update",
+      _meta: { steps: 1, promptTokens: 100, completionTokens: completion, cachedTokens: 50, totalTokens: 100 + completion, tokensPerSecond: 0, lastTurnDuration: 0, lastTurnTotalTokens: 100 + completion },
+    })
+    return reply(id, { stopReason, usage: usage() })
+  }
 
   switch (script) {
     case "config":
       chunk(`cfg:${conversation.model}/${conversation.level}`)
-      return reply(id, { stopReason: "end_turn", usage: usage() })
+      return finish("end_turn")
     case "mixed":
       update(sessionId, { sessionUpdate: "agent_thought_chunk", content: { type: "text", text: "thinking" } })
       chunk("before ")
@@ -161,7 +171,7 @@ async function prompt(id: unknown, params: any) {
       })
       update(sessionId, toolCall("completed", { rawOutput: { stdout: "", stderr: "", output: "", truncated: false } }))
       chunk("after")
-      return reply(id, { stopReason: "end_turn", usage: usage() })
+      return finish("end_turn")
     case "fail-tool":
       update(sessionId, toolCall("in_progress"))
       update(
@@ -172,7 +182,7 @@ async function prompt(id: unknown, params: any) {
         }),
       )
       chunk("failed")
-      return reply(id, { stopReason: "end_turn", usage: usage() })
+      return finish("end_turn")
     case "permission": {
       const response = await request("session/request_permission", {
         sessionId,
@@ -185,12 +195,12 @@ async function prompt(id: unknown, params: any) {
         ],
       })
       chunk(`permission:${JSON.stringify(response.result?.outcome ?? response.error)}`)
-      return reply(id, { stopReason: "end_turn", usage: usage() })
+      return finish("end_turn")
     }
     case "unknown-request": {
       const response = await request("fs/read_text_file", { sessionId, path: "x" })
       chunk(`unknown:${response.error?.code}`)
-      return reply(id, { stopReason: "end_turn", usage: usage() })
+      return finish("end_turn")
     }
     case "slow": {
       chunk("partial")
@@ -198,7 +208,7 @@ async function prompt(id: unknown, params: any) {
       await Promise.race([cancelled, sleep(10_000)])
       cancels.delete(sessionId)
       // Like vibe: a cancelled turn still reports the usage it had reached.
-      return reply(id, { stopReason: "cancelled", usage: usage() })
+      return finish("cancelled")
     }
     case "hold":
       log({ event: "hold-start", sessionId, at: Date.now() })
@@ -207,7 +217,7 @@ async function prompt(id: unknown, params: any) {
       delete (conversation as { running?: boolean }).running
       log({ event: "hold-end", sessionId, at: Date.now() })
       chunk("held")
-      return reply(id, { stopReason: "end_turn", usage: usage() })
+      return finish("end_turn")
     case "rpc-error":
       return fail(id, -32000, "not authenticated: please log in")
     case "error-after-chunk":
@@ -215,7 +225,7 @@ async function prompt(id: unknown, params: any) {
       return fail(id, -32000, "quota exceeded halfway")
     case "array-content":
       update(sessionId, { sessionUpdate: "agent_message_chunk", content: [{ type: "text", text: "ab" }, { type: "text", text: "cd" }] })
-      return reply(id, { stopReason: "end_turn", usage: usage() })
+      return finish("end_turn")
     case "crash-noisy":
       process.stderr.write("E".repeat(1000) + "\nsecond line that must not be shown\n")
       await sleep(20)
@@ -228,10 +238,10 @@ async function prompt(id: unknown, params: any) {
     // eslint-disable-next-line no-fallthrough
     case "max-tokens":
       chunk("cut")
-      return reply(id, { stopReason: "max_tokens", usage: usage() })
+      return finish("max_tokens", 1)
     default:
       chunk(`ok-${conversation.prompts}`)
-      return reply(id, { stopReason: "end_turn", usage: usage() })
+      return finish("end_turn")
   }
 }
 

@@ -4,6 +4,7 @@ import type { LanguageModelV3Prompt } from "@ai-sdk/provider"
 import { AcpClient } from "../src/acp/client"
 import { contentText } from "../src/acp/content"
 import { mapUsage } from "../src/convert"
+import { recordUsage, usageLedger } from "../src/usage"
 import { createCatalog } from "../src/catalog"
 import { decide, type SessionRecord } from "../src/sync/decide"
 import { ANY_REPLY, assistantHash, groups, toolInput } from "../src/sync/fingerprint"
@@ -351,19 +352,23 @@ describe("M7: model catalog refresh", () => {
 })
 
 describe("minor items", () => {
-  test("m2: usage fields vibe did not send stay undefined, partial usage included", () => {
-    expect(mapUsage({ outputTokens: 7 })).toEqual({
-      inputTokens: { total: undefined, noCache: undefined, cacheRead: undefined, cacheWrite: undefined },
-      outputTokens: { total: 7, text: 7, reasoning: undefined },
+  test("m2: usage is per call, and nothing is invented when nothing was measured", () => {
+    // No ledger entry: every field stays undefined rather than claiming a zero.
+    const empty = mapUsage(undefined)
+    expect(Object.values(empty.inputTokens).every((value) => value === undefined)).toBe(true)
+    expect(Object.values(empty.outputTokens).every((value) => value === undefined)).toBe(true)
+
+    // vibe counts the cache reads inside the prompt total, so the cache-free part is what the call's prompt leaves
+    // over, and the gauge (`noCache + cacheRead + output`) is the live context it reported.
+    const state = usageLedger("ses_review_m2")
+    recordUsage(state, {
+      sessionUpdate: "usage_update",
+      used: 105,
+      _meta: { promptTokens: 100, completionTokens: 5, cachedTokens: 50 },
     })
-    expect(mapUsage({ inputTokens: 10 }).outputTokens).toEqual({ total: undefined, text: undefined, reasoning: undefined })
-    expect(mapUsage({ inputTokens: 10 }).inputTokens).toEqual({ total: 10, noCache: 10, cacheRead: 0, cacheWrite: undefined })
-    // vibe counts the cache reads inside inputTokens; adding them again would double-count
-    expect(mapUsage({ inputTokens: 100, cachedReadTokens: 50, outputTokens: 5, totalTokens: 105 }).inputTokens).toEqual({
-      total: 100,
-      noCache: 50,
-      cacheRead: 50,
-      cacheWrite: undefined,
+    expect(mapUsage(state)).toEqual({
+      inputTokens: { total: 100, noCache: 50, cacheRead: 50, cacheWrite: undefined },
+      outputTokens: { total: 5, text: 5, reasoning: undefined },
     })
   })
 

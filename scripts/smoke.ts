@@ -6,6 +6,7 @@ import { VibeLanguageModel, KIND_HEADER, SESSION_HEADER } from "../src/model"
 import { VibeSessions, type RunOutcome } from "../src/sessions"
 import { DEFAULT_CATALOG } from "../src/models"
 import type { SessionRecord } from "../src/sync/decide"
+import { usageLedger } from "../src/usage"
 
 const MODEL = "mistral-large-4-0"
 // What OpenCode delivers for `--variant low` / `vibe/mistral-large-4-0#low`.
@@ -48,6 +49,21 @@ async function turn(prompt: LanguageModelV3Prompt) {
   console.log("text:", JSON.stringify(text))
   console.log("finish:", JSON.stringify(finish))
   if (!finish || parts.at(-1)?.type !== "finish") throw new Error("stream did not end with finish")
+  // The fix's invariant, against the live agent: the mapped gauge is the context vibe says is in use, never the
+  // session's cumulative totals, so it cannot grow past the window turn after turn.
+  const state = usageLedger("ses_smoke")
+  const usage = finish.type === "finish" ? finish.usage : undefined
+  const gauge =
+    (usage?.inputTokens.noCache ?? 0) + (usage?.inputTokens.cacheRead ?? 0) + (usage?.outputTokens.total ?? 0)
+  const cumulative = outcomes.at(-1)?.result.usage
+  check(
+    state.used !== undefined && gauge === state.used,
+    `mapped gauge ${gauge} equals vibe's live context ${state.used}`,
+  )
+  check(
+    (cumulative?.inputTokens ?? 0) + (cumulative?.outputTokens ?? 0) >= gauge,
+    `gauge ${gauge} does not exceed this turn's cumulative totals ${(cumulative?.inputTokens ?? 0) + (cumulative?.outputTokens ?? 0)}`,
+  )
   return text
 }
 

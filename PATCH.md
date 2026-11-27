@@ -6,8 +6,11 @@ This is a fork of [ilyhalight/opencode-with-vibe](https://github.com/ilyhalight/
 context gauge past 200% and triggered auto-compaction with a small real context. Read
 [`patch/README.md`](patch/README.md) for the diagnosis, the fix design, and the evidence.
 
-Upstream source is untouched. The fix is applied to the built bundle, which this fork
-commits at `dist/plugin.js`.
+The fix lives in `src/`: [`src/usage.ts`](src/usage.ts) holds the per-session ledger, and
+`src/convert.ts` maps usage from it instead of from the prompt result. `dist/plugin.js` is
+that source built, committed for the reasons below. `patch/` keeps the original patch
+against the shipped bundle, which is still how the same fix reaches a machine that loads
+the npm package rather than this checkout.
 
 ## Using it on another machine
 
@@ -21,7 +24,7 @@ this fork once per machine at a stable path and symlink the bundle in:
 
 ```bash
 git clone https://github.com/ling40hrs/opencode-with-vibe.git ~/.local/share/opencode-with-vibe
-git -C ~/.local/share/opencode-with-vibe checkout v0.1.0-fix.1
+git -C ~/.local/share/opencode-with-vibe checkout v0.1.0-fix.2
 ln -sf ~/.local/share/opencode-with-vibe/dist/plugin.js ~/.config/opencode/plugin/opencode-with-vibe.js
 ```
 
@@ -33,7 +36,7 @@ check:
 opencode plugin list   # expect: opencode-with-vibe  local  ~/.config/opencode/plugin/opencode-with-vibe.js
 ```
 
-`git -C ... checkout v0.1.0-fix.1` is what pins the machine. Use the commit sha instead of
+`git -C ... checkout v0.1.0-fix.2` is what pins the machine. Use the commit sha instead of
 the tag if you want immunity to a force-push.
 
 ### Route 2: publish to npm (works, needs credentials)
@@ -50,7 +53,7 @@ then use the spec above.
 
 ### What does not work in v2.4.2
 
-- **Git specs.** `opencode plugin add 'github:ling40hrs/opencode-with-vibe#v0.1.0-fix.1'`
+- **Git specs.** `opencode plugin add 'github:ling40hrs/opencode-with-vibe#v0.1.0-fix.2'`
   fails with `git dep preparation failed`, after which bun prints `Unrecognized flag:
   --force in command opencode` and friends — OpenCode's binary re-execs itself with npm
   flags and its own CLI rejects them. Pristine upstream
@@ -67,12 +70,12 @@ and there is no `prepare` script — only `build`, which needs the dev dependenc
 consumer that resolves the package rather than the file finds nothing to load. Committing
 the built bundle means no machine needs a toolchain, and Route 1 has something to link.
 
-`dist/plugin.js` is reproducible from the patch:
+`dist/plugin.js` is reproducible from the source:
 
 ```bash
-cp patch/plugin.js.orig /tmp/repatch.js
-node patch/apply-patch.cjs /tmp/repatch.js && cmp /tmp/repatch.js dist/plugin.js
-rm -f /tmp/repatch.js
+bun install --frozen-lockfile
+bun test && bun run typecheck && bun run build   # writes dist/plugin.js
+bun run scripts/smoke.ts                         # two real turns against vibe-acp
 ```
 
 The bundle has no runtime dependencies — it imports only Node builtins — so `dist/plugin.js`
@@ -80,10 +83,19 @@ plus `dist/plugin.d.ts` are the whole artifact.
 
 ## Maintaining it
 
-- `node patch/test-usage.cjs` runs the unit checks for the patched math.
-- When upstream releases a new version, rebuild `dist/`, then run `patch/apply-patch.cjs`
-  against the fresh bundle. If it throws, the minified call sites moved: re-derive the six
-  needles as described in `patch/README.md`. Do not revert to cumulative counters.
+- `bun test` covers the mapping: gauge equals the live `used`, cumulative totals reduced to
+  one call's delta, a repeated update changing nothing, per-session isolation, a resumed
+  session not inflating, and no ledger meaning no tokens.
+- `bun run scripts/smoke.ts` is the live check: two real prompts on `mistral-large-4-0`,
+  with the per-turn usage printed. A turn whose mapped total equals the previous turn's
+  cumulative total means the deltas are not being reduced.
+- When upstream releases a new version, merge the release, then rebuild `dist/`. The
+  mapping is in `src/usage.ts` and `src/convert.ts`, well away from upstream's changed
+  files. Do not revert to cumulative counters.
+- For machines that load the published bundle out of the npm cache (no checkout, no
+  toolchain), `patch/apply-patch.cjs` applies the same fix to a bundle at rest; `patch/`
+  documents those six needles. Re-check it against a new build, since its needles are the
+  minified call sites of the version it was written for.
 - The underlying bug is worth reporting upstream; if it is fixed there, this fork can be
   retired. The ACP cross-check in `patch/README.md` (live `used = 39,453` versus
   `_meta.promptTokens = 48,996` on one turn) is the evidence a maintainer needs.

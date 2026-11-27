@@ -1,8 +1,9 @@
 import type { JSONValue, LanguageModelV3StreamPart, LanguageModelV3Usage } from "@ai-sdk/provider"
 import { contentText } from "./acp/content"
-import type { PromptResult, PromptUsage, SessionUpdate, ToolCallUpdate, UsageUpdate } from "./acp/types"
+import type { PromptResult, SessionUpdate, ToolCallUpdate, UsageUpdate } from "./acp/types"
 import { canonical } from "./sync/canonical"
 import type { ToolIdentity } from "./sync/fingerprint"
+import { recordUsage, type SessionUsage } from "./usage"
 
 type Part = LanguageModelV3StreamPart
 type Finish = Extract<Part, { type: "finish" }>
@@ -12,6 +13,8 @@ const MAX_STRING = 8_000
 export interface ConverterOptions {
   /** Called with `usage_update.size`, the only place Vibe states the model's context window. */
   onContext?: (size: number) => void
+  /** The usage ledger of the session this stream belongs to; `usage_update` writes into it. */
+  state?: SessionUsage
 }
 
 /** Turns Vibe's `session/update` notifications into AI SDK v3 stream parts. */
@@ -34,7 +37,9 @@ export class UpdateConverter {
       case "tool_call_update":
         return this.tool(update as ToolCallUpdate)
       case "usage_update": {
-        const size = (update as UsageUpdate).size
+        const usage = update as UsageUpdate
+        if (this.options.state) recordUsage(this.options.state, usage)
+        const size = usage.size
         if (typeof size === "number" && Number.isFinite(size) && size > 0) this.options.onContext?.(size)
         return []
       }
@@ -122,38 +127,46 @@ const STOP_REASONS: Record<string, Finish["finishReason"]["unified"]> = {
   error: "error",
 }
 
-export function finishPart(result: PromptResult, metadata?: Record<string, string>): Finish {
+export function finishPart(
+  result: PromptResult,
+  metadata?: Record<string, string>,
+  state?: SessionUsage,
+): Finish {
   return {
     type: "finish",
-    usage: mapUsage(result.usage),
+    usage: mapUsage(state),
     finishReason: { unified: STOP_REASONS[result.stopReason] ?? "other", raw: result.stopReason },
     ...(metadata ? { providerMetadata: { vibe: metadata } } : {}),
   }
 }
 
+const UNMEASURED: LanguageModelV3Usage = {
+  inputTokens: { total: undefined, noCache: undefined, cacheRead: undefined, cacheWrite: undefined },
+  outputTokens: { total: undefined, text: undefined, reasoning: undefined },
+}
+
 /**
- * Vibe reports `inputTokens` *including* `cachedReadTokens` (they are a subset, not an extra), and
- * `totalTokens == inputTokens + outputTokens`. Adding the cache reads on top of `inputTokens` — which the agy
- * dialect allowed — would double-count them, so the cache-free part is derived by subtracting.
+ * One call's usage, from the session ledger rather than from `result.usage`.
+ *
+ * Vibe answers `session/prompt` with the session's cumulative totals (`_meta.promptTokens` and friends), so mapping
+ * them as the usage of the call that just finished counted every earlier turn again; the gauge grew past 200% and
+ * auto-compaction fired on a small context. The ledger reduces those totals to this call's delta instead, and `used`
+ * — the live context — is the anchor: `noCache + cacheRead + output` equals it.
+ *
+ * Without a ledger entry nothing is reported: a missing measurement is better than a cumulative total.
  * Vibe has no cache-write and no separate thought counter.
  */
-export function mapUsage(usage: PromptUsage | undefined): LanguageModelV3Usage {
-  const input = usage?.inputTokens
-  const cacheRead = usage?.cachedReadTokens
-  const output = usage?.outputTokens
-  // Fields Vibe did not report stay undefined; zero would claim a measurement that never happened.
+export function mapUsage(state: SessionUsage | undefined): LanguageModelV3Usage {
+  const last = state?.last
+  if (last === undefined) return UNMEASURED
+  const used = state?.used
+  // A completion can never exceed the context it ran in; what is left of the context is the prompt.
+  const output = used === undefined ? Math.max(0, last.completion) : Math.min(Math.max(0, last.completion), used)
+  const input = used === undefined ? Math.max(0, last.prompt) : Math.max(0, used - output)
+  const cacheRead = Math.min(Math.max(0, last.cached), input)
   return {
-    inputTokens: {
-      total: input,
-      noCache: input === undefined ? undefined : Math.max(0, input - (cacheRead ?? 0)),
-      cacheRead: input === undefined && cacheRead === undefined ? undefined : (cacheRead ?? 0),
-      cacheWrite: undefined,
-    },
-    outputTokens: {
-      total: output,
-      text: output,
-      reasoning: undefined,
-    },
+    inputTokens: { total: input, noCache: Math.max(0, input - cacheRead), cacheRead, cacheWrite: undefined },
+    outputTokens: { total: output, text: output, reasoning: undefined },
   }
 }
 

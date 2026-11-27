@@ -9,6 +9,7 @@ import type {
 } from "@ai-sdk/provider"
 import { AcpRpcError } from "./acp/types"
 import { finishPart, UpdateConverter } from "./convert"
+import { usageLedger } from "./usage"
 import { PROVIDER_ID as CATALOG_PROVIDER_ID, requestedLevel, THOUGHT_LEVEL_KEY, type CatalogModel } from "./models"
 import type { RunOutcome, RunRequest } from "./sessions"
 
@@ -124,7 +125,10 @@ export class VibeLanguageModel implements LanguageModelV3 {
     const signal = options.abortSignal ? AbortSignal.any([abort.signal, options.abortSignal]) : abort.signal
     const headers = options.headers ?? {}
     const primary = headers[KIND_HEADER] === "primary"
+    // Usage is cumulative per session, so the ledger is looked up per session, not per stream.
+    const state = usageLedger(headers[SESSION_HEADER])
     const converter = new UpdateConverter({
+      state,
       onContext: (size) => this.dependencies.learn?.(this.modelId, size),
     })
     let cancelled = false
@@ -165,7 +169,7 @@ export class VibeLanguageModel implements LanguageModelV3 {
             (outcome) => {
               emit([
                 ...converter.close(),
-                finishPart(outcome.result, { conversationId: outcome.acpSessionId, mode: outcome.mode }),
+                finishPart(outcome.result, { conversationId: outcome.acpSessionId, mode: outcome.mode }, state),
               ])
               if (!cancelled) controller.close()
             },

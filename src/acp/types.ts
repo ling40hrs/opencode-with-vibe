@@ -95,8 +95,17 @@ export interface TextChunkUpdate {
 /** The only place Vibe states the model's context window: `usage_update.size`. */
 export interface UsageUpdate {
   sessionUpdate: "usage_update"
+  /** The live context of this update: what the model currently holds, not a session total. */
   used?: number
   size?: number
+  /** Session cumulative counters (`stats.session_*`), which are only per-call as deltas between two updates. */
+  _meta?: {
+    promptTokens?: number
+    completionTokens?: number
+    cachedTokens?: number
+    lastTurnTotal?: number
+    steps?: number
+  }
 }
 
 /** Any other `session/update` (commands, session info, mode...). Ignored by this plugin. */
