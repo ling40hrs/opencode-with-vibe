@@ -30,6 +30,9 @@ Other plugins emulate API calls, so they will eventually get banned. This plugin
 1. Install the Mistral Vibe CLI, sign in once (`vibe`), and make sure `vibe-acp` is on `PATH`
 2. Add the plugin to `opencode.json`
 
+For a checkout of this fork, `scripts/install-local.sh` does the install (see
+[`PATCH.md`](PATCH.md#route-1-the-plugin-directory-works-today)). Otherwise:
+
 ```json
 {
   // ...

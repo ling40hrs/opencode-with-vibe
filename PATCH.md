@@ -29,21 +29,32 @@ one — a git spec — does not work at all.
 ### Route 1: the plugin directory (works today)
 
 OpenCode scans `~/.config/opencode/plugin/` and loads every plugin it finds there. Clone
-this fork once per machine at a stable path and symlink the bundle in:
+this fork once per machine at a stable path, then run the installer:
 
 ```bash
 git clone https://github.com/ling40hrs/opencode-with-vibe.git ~/.local/share/opencode-with-vibe
 git -C ~/.local/share/opencode-with-vibe checkout v0.1.0-fix.4
-ln -sf ~/.local/share/opencode-with-vibe/dist/plugin.js ~/.config/opencode/plugin/opencode-with-vibe.js
+~/.local/share/opencode-with-vibe/scripts/install-local.sh --check   # what is installed now
+~/.local/share/opencode-with-vibe/scripts/install-local.sh           # switch, verify, roll back on failure
 ```
 
-Then drop the `opencode-with-vibe` entry from `plugins` in `opencode.json`, so the npm
-package cannot load alongside it — both provide `vibe/*` providers. Restart OpenCode and
-check:
+It symlinks `dist/plugin.js` into `plugin/`, removes the `opencode-with-vibe` entry from
+`plugins` in `opencode.json` (both provide `vibe/*`, and two providers with one id is not a
+state to leave behind), then boots a private `opencode --standalone` against the edited config
+and counts the `vibe/*` models it reports. A bundle that fails there is rolled back rather than
+left for the next restart. Restart OpenCode and check:
 
 ```bash
 opencode plugin list   # expect: opencode-with-vibe  local  ~/.config/opencode/plugin/opencode-with-vibe.js
 ```
+
+**The trap this route exists for.** A config entry `{ "package": "opencode-with-vibe" }` loads
+the published bundle out of `~/.cache/opencode/npm/opencode-with-vibe@latest/<stamp>/dist/plugin.js`.
+Editing a checkout changes nothing while that entry is present — the running provider is the
+cached copy, at whatever version was resolved last. `--check` reports which shape a machine is
+in (`link: absent` plus `config: still lists the npm package` is the symptom), and
+`patch/apply-patch.cjs` is the alternative for a machine that cannot switch at all: it edits
+that cached bundle in place.
 
 `git -C ... checkout v0.1.0-fix.4` is what pins the machine. Use the commit sha instead of
 the tag if you want immunity to a force-push.
