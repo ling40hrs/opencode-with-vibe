@@ -178,9 +178,9 @@ export class VibeSessions {
     const live = continuing ? previous! : await this.create(true)
     if (!continuing) this.live.set(sessionID, live)
     if (live.restricted === undefined) {
-      const previous = await this.storedAgent(sessionID)
-      live.restricted = previous?.restricted ?? false
-      live.unselected = previous?.unselected
+      const stored = await this.storedAgent(sessionID)
+      live.restricted = stored?.restricted ?? false
+      live.unselected = stored?.unselected
     }
     const mode: RunMode = continuing ? (reattached ? "reattached" : "continue") : "fresh"
     const reason = decision.kind === "fresh" ? describeReason(record ? decision.reason : "no-record") : undefined
